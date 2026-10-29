@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -43,13 +45,19 @@ def test_logging_without_file_keeps_console_output():
     assert "\x1b[" not in result.stderr
 
 
-def test_file_contains_json_events_and_stderr_stays_human_readable(tmp_path):
+@pytest.mark.parametrize("file_format", [None, "jsonl"])
+def test_file_contains_json_events_and_stderr_stays_human_readable(
+    tmp_path, file_format
+):
     tracefile = tmp_path / "audit.jsonl"
+    settings = {"LOG_FILE": str(tracefile)}
+    if file_format is not None:
+        settings["LOG_FILE_FORMAT"] = file_format
     result = _run_logging(
         "import logging; from pathlib import Path; from logger import logger; "
         'logger.info("tool invoked", ise_api="/ers/config", path=Path("/tmp")); '
         'logging.getLogger("external").warning("other warning")',
-        LOG_FILE=str(tracefile),
+        **settings,
     )
 
     assert result.returncode == 0, result.stderr
@@ -91,40 +99,50 @@ def test_text_file_contains_human_readable_events_without_ansi(tmp_path):
     assert "\x1b[" not in tracefile.read_text()
 
 
-def test_file_rotation_honors_backup_count(tmp_path):
-    tracefile = tmp_path / "audit.jsonl"
+@pytest.mark.parametrize("file_format", ["jsonl", "text"])
+def test_file_rotation_honors_backup_count(tmp_path, file_format):
+    tracefile = tmp_path / "audit.log"
     result = _run_logging(
         "from logger import logger; "
         '[logger.info("tool invoked", index=i) for i in range(30)]',
         LOG_FILE=str(tracefile),
+        LOG_FILE_FORMAT=file_format,
         LOG_FILE_MAX_BYTES="350",
         LOG_FILE_BACKUP_COUNT="2",
     )
 
     assert result.returncode == 0, result.stderr
     assert tracefile.exists()
-    assert (tmp_path / "audit.jsonl.1").exists()
-    assert (tmp_path / "audit.jsonl.2").exists()
-    assert not (tmp_path / "audit.jsonl.3").exists()
+    assert (tmp_path / "audit.log.1").exists()
+    assert (tmp_path / "audit.log.2").exists()
+    assert not (tmp_path / "audit.log.3").exists()
     for path in tmp_path.iterdir():
         for line in path.read_text().splitlines():
-            assert json.loads(line)["event"] == "tool invoked"
+            if file_format == "jsonl":
+                assert json.loads(line)["event"] == "tool invoked"
+            else:
+                assert "tool invoked" in line
 
 
-def test_foreign_exception_keeps_stderr_traceback_and_json_exception(tmp_path):
-    tracefile = tmp_path / "audit.jsonl"
+@pytest.mark.parametrize("file_format", ["jsonl", "text"])
+def test_foreign_exception_is_preserved_in_stderr_and_file(tmp_path, file_format):
+    tracefile = tmp_path / "audit.log"
     result = _run_logging(
         "import logging; import logger; "
         'error = RuntimeError("boom"); '
         'logging.getLogger("external").error("failed", exc_info=(type(error), error, error.__traceback__))',
         LOG_FILE=str(tracefile),
+        LOG_FILE_FORMAT=file_format,
     )
 
     assert result.returncode == 0, result.stderr
     assert "failed\nRuntimeError: boom" in result.stderr
-    event = json.loads(tracefile.read_text().splitlines()[0])
-    assert event["event"] == "failed"
-    assert "RuntimeError: boom" in event["exception"]
+    if file_format == "jsonl":
+        event = json.loads(tracefile.read_text().splitlines()[0])
+        assert event["event"] == "failed"
+        assert "RuntimeError: boom" in event["exception"]
+    else:
+        assert "failed\nRuntimeError: boom" in tracefile.read_text()
 
 
 def test_invalid_rotation_settings_fail_at_startup(tmp_path):

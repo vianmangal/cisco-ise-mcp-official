@@ -122,6 +122,16 @@ LOG_FILE_BACKUP_COUNT=5
 ```
 
 For plain text instead, set `LOG_FILE_FORMAT=text` and use a `.log` file path.
+Use a new `LOG_FILE` path when switching formats: existing files are appended
+to, and their previous contents are not converted.
+
+For local runs, explicitly load the `.env` values into the process environment:
+
+```bash
+uv run --env-file .env server.py
+```
+
+Docker Compose already loads these values through its `env_file` setting.
 
 The active file rotates when it reaches `LOG_FILE_MAX_BYTES`; up to
 `LOG_FILE_BACKUP_COUNT` numbered backups are kept. Both limits must be positive
