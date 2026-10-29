@@ -72,7 +72,8 @@ def setup_logging() -> None:
         DEBUG_MCP: Set to "true" for DEBUG level. Otherwise defaults to INFO.
         LOG_COLORS: Force ANSI colors on/off. Defaults to autodetecting whether
             stderr is a TTY.
-        LOG_FILE: Optional path for a JSON-lines log alongside stderr.
+        LOG_FILE: Optional path for a file log alongside stderr.
+        LOG_FILE_FORMAT: File format, "jsonl" (default) or "text".
         LOG_FILE_MAX_BYTES: Rotate the file after this many bytes (default 10 MiB).
         LOG_FILE_BACKUP_COUNT: Number of rotated files to retain (default 5).
     """
@@ -94,44 +95,51 @@ def setup_logging() -> None:
         structlog.processors.format_exc_info,
     ]
 
-    console_renderer = structlog.dev.ConsoleRenderer(colors=_resolve_use_colors())
+    def text_formatter(colors: bool) -> structlog.stdlib.ProcessorFormatter:
+        renderer = structlog.dev.ConsoleRenderer(colors=colors)
 
-    def render_console(logger, method_name, event_dict):
-        from_structlog = event_dict.get("_from_structlog", False)
-        event_dict = structlog.stdlib.ProcessorFormatter.remove_processors_meta(
-            logger, method_name, event_dict
-        )
-        if not from_structlog:
-            return str(event_dict["event"])
-        return console_renderer(logger, method_name, event_dict)
+        def render_text(logger, method_name, event_dict):
+            from_structlog = event_dict.get("_from_structlog", False)
+            event_dict = structlog.stdlib.ProcessorFormatter.remove_processors_meta(
+                logger, method_name, event_dict
+            )
+            if not from_structlog:
+                return str(event_dict["event"])
+            return renderer(logger, method_name, event_dict)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(
-        structlog.stdlib.ProcessorFormatter(
+        return structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=shared_processors,
-            processors=[render_console],
+            processors=[render_text],
             keep_exc_info=True,
             keep_stack_info=True,
         )
-    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(text_formatter(colors=_resolve_use_colors()))
     handlers: list[logging.Handler] = [console_handler]
 
     log_file = os.environ.get("LOG_FILE", "").strip()
     if log_file:
+        file_format = os.environ.get("LOG_FILE_FORMAT", "jsonl").strip().lower()
+        if file_format not in {"jsonl", "text"}:
+            raise ValueError("LOG_FILE_FORMAT must be 'jsonl' or 'text'")
         max_bytes = _positive_int_env("LOG_FILE_MAX_BYTES", _FILE_MAX_BYTES)
         backup_count = _positive_int_env("LOG_FILE_BACKUP_COUNT", _FILE_BACKUP_COUNT)
         file_handler = RotatingFileHandler(
             log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
         )
-        file_handler.setFormatter(
-            structlog.stdlib.ProcessorFormatter(
-                foreign_pre_chain=shared_processors,
-                processors=[
-                    structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                    structlog.processors.JSONRenderer(default=str),
-                ],
+        if file_format == "text":
+            file_handler.setFormatter(text_formatter(colors=False))
+        else:
+            file_handler.setFormatter(
+                structlog.stdlib.ProcessorFormatter(
+                    foreign_pre_chain=shared_processors,
+                    processors=[
+                        structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                        structlog.processors.JSONRenderer(default=str),
+                    ],
+                )
             )
-        )
         handlers.append(file_handler)
 
     structlog.configure(
@@ -154,7 +162,15 @@ def setup_logging() -> None:
     root.setLevel(logging.WARNING)
 
     level = _resolve_log_level(log_level)
-    for prefix in ("tools", "clients", "services", "utils", "resources", "models", "shared_libs"):
+    for prefix in (
+        "tools",
+        "clients",
+        "services",
+        "utils",
+        "resources",
+        "models",
+        "shared_libs",
+    ):
         logging.getLogger(prefix).setLevel(level)
     logging.getLogger(APP_LOGGER_NAME).setLevel(level)
 
